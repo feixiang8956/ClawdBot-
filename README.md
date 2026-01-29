@@ -122,7 +122,7 @@ bash ~/.clawd/config-menu.sh
 curl -fsSL https://raw.githubusercontent.com/miaoxworld/ClawdBotInstaller/main/config-menu.sh | bash
 
 # 启动服务
-clawdbot start
+clawdbot gateway start
 ```
 
 ## ⚙️ 详细配置
@@ -221,17 +221,20 @@ llm:
 ### 服务管理
 
 ```bash
-# 启动服务
-clawdbot start
+# 启动服务（后台守护进程）
+clawdbot gateway start
 
 # 停止服务
-clawdbot stop
+clawdbot gateway stop
 
 # 重启服务
-clawdbot restart
+clawdbot gateway restart
 
-# 查看状态
-clawdbot status
+# 查看服务状态
+clawdbot gateway status
+
+# 前台运行（用于调试）
+clawdbot gateway
 
 # 查看日志
 clawdbot logs
@@ -456,7 +459,7 @@ clawdbot backup
 
 ```bash
 # 停止服务
-clawdbot stop
+clawdbot gateway stop
 
 # 卸载程序
 npm uninstall -g clawdbot

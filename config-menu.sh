@@ -30,6 +30,11 @@ CONFIG_FILE="$CONFIG_DIR/config.yaml"
 LOG_DIR="$CONFIG_DIR/logs"
 DATA_DIR="$CONFIG_DIR/data"
 SKILLS_DIR="$CONFIG_DIR/skills"
+
+# ClawdBot 实际配置目录
+CLAWDBOT_DIR="$HOME/.clawdbot"
+CLAWDBOT_ENV="$CLAWDBOT_DIR/env"
+CLAWDBOT_JSON="$CLAWDBOT_DIR/clawdbot.json"
 BACKUP_DIR="$CONFIG_DIR/backups"
 
 # ================================ 工具函数 ================================
@@ -146,6 +151,45 @@ update_config_value() {
 # 检查 ClawdBot 是否已安装
 check_clawdbot_installed() {
     command -v clawdbot &> /dev/null
+}
+
+# 重启 Gateway 使渠道配置生效
+restart_gateway_for_channel() {
+    echo ""
+    log_info "正在重启 Gateway..."
+    
+    # 先尝试停止
+    clawdbot gateway stop 2>/dev/null || true
+    sleep 1
+    
+    # 加载环境变量
+    if [ -f "$CLAWDBOT_ENV" ]; then
+        source "$CLAWDBOT_ENV"
+        log_info "已加载环境变量: $CLAWDBOT_ENV"
+    fi
+    
+    # 后台启动 Gateway
+    echo -e "${YELLOW}正在后台启动 Gateway...${NC}"
+    
+    # 构建启动命令（包含环境变量）
+    if [ -f "$CLAWDBOT_ENV" ]; then
+        nohup bash -c "source $CLAWDBOT_ENV && clawdbot gateway --port 18789" > /tmp/clawdbot-gateway.log 2>&1 &
+    else
+        nohup clawdbot gateway --port 18789 > /tmp/clawdbot-gateway.log 2>&1 &
+    fi
+    
+    sleep 3
+    
+    # 检查是否启动成功
+    if pgrep -f "clawdbot.*gateway" > /dev/null 2>&1; then
+        log_info "Gateway 已在后台启动！"
+        echo ""
+        echo -e "${CYAN}查看日志: ${WHITE}tail -f /tmp/clawdbot-gateway.log${NC}"
+        echo -e "${CYAN}停止服务: ${WHITE}clawdbot gateway stop${NC}"
+    else
+        log_warn "Gateway 可能未正常启动"
+        echo -e "${YELLOW}请手动启动: source ~/.clawdbot/env && clawdbot gateway${NC}"
+    fi
 }
 
 # 检查 ClawdBot Gateway 是否运行
@@ -659,7 +703,10 @@ config_anthropic() {
     
     read -p "$(echo -e "${YELLOW}输入 Claude API Key (留空保持不变): ${NC}")" api_key
     
-    if [ -n "$api_key" ]; then
+    # 如果没有输入新的 key，使用当前的
+    if [ -z "$api_key" ]; then
+        api_key="$current_key"
+    else
         backup_config
         update_config_value "provider" "anthropic"
         update_config_value "api_key" "$api_key"
@@ -686,6 +733,9 @@ config_anthropic() {
     esac
     
     update_config_value "model" "$model"
+    
+    # 保存到 ClawdBot 环境变量配置
+    save_clawdbot_ai_config "anthropic" "$api_key" "$model" ""
     
     echo ""
     log_info "Anthropic Claude 配置完成！"
@@ -738,6 +788,9 @@ config_openai() {
     esac
     
     update_config_value "model" "$model"
+    
+    # 保存到 ClawdBot 环境变量配置
+    save_clawdbot_ai_config "openai" "$api_key" "$model" ""
     
     echo ""
     log_info "OpenAI GPT 配置完成！"
@@ -795,6 +848,9 @@ config_ollama() {
     update_config_value "base_url" "$ollama_url"
     update_config_value "model" "$model"
     update_config_value "api_key" ""
+    
+    # 保存到 ClawdBot 环境变量配置
+    save_clawdbot_ai_config "ollama" "" "$model" "$ollama_url"
     
     echo ""
     log_info "Ollama 配置完成！"
@@ -855,6 +911,9 @@ config_openrouter() {
     esac
     
     update_config_value "model" "$model"
+    
+    # 保存到 ClawdBot 环境变量配置
+    save_clawdbot_ai_config "openrouter" "$api_key" "$model" ""
     
     echo ""
     log_info "OpenRouter 配置完成！"
@@ -933,6 +992,9 @@ config_openai_compatible() {
     update_config_value "api_key" "$api_key"
     update_config_value "model" "$model"
     
+    # 保存到 ClawdBot 环境变量配置
+    save_clawdbot_ai_config "openai-compatible" "$api_key" "$model" "$base_url"
+    
     echo ""
     log_info "OpenAI Compatible 配置完成！"
     log_info "API 地址: $base_url"
@@ -987,6 +1049,9 @@ config_google_gemini() {
     esac
     
     update_config_value "model" "$model"
+    
+    # 保存到 ClawdBot 环境变量配置
+    save_clawdbot_ai_config "google" "$api_key" "$model" ""
     
     echo ""
     log_info "Google Gemini 配置完成！"
@@ -1085,6 +1150,9 @@ config_groq() {
     
     update_config_value "model" "$model"
     
+    # 保存到 ClawdBot 环境变量配置
+    save_clawdbot_ai_config "groq" "$api_key" "$model" ""
+    
     echo ""
     log_info "Groq 配置完成！"
     log_info "模型: $model"
@@ -1141,6 +1209,9 @@ config_mistral() {
     esac
     
     update_config_value "model" "$model"
+    
+    # 保存到 ClawdBot 环境变量配置
+    save_clawdbot_ai_config "mistral" "$api_key" "$model" ""
     
     echo ""
     log_info "Mistral AI 配置完成！"
@@ -1211,7 +1282,7 @@ config_telegram() {
     if [ -n "$bot_token" ] && [ -n "$user_id" ]; then
         backup_config
         
-        # 添加 Telegram 配置到文件
+        # 添加 Telegram 配置到本地配置文件
         if grep -q "telegram:" "$CONFIG_FILE"; then
             log_warn "Telegram 配置已存在，将更新..."
         else
@@ -1227,13 +1298,48 @@ EOF
         fi
         
         echo ""
-        log_info "Telegram 配置完成！"
-        log_info "Bot Token: ${bot_token:0:10}..."
-        log_info "User ID: $user_id"
+        log_info "本地配置文件已更新！"
+        
+        # 如果 ClawdBot 已安装，使用 clawdbot 命令配置
+        if check_clawdbot_installed; then
+            echo ""
+            log_info "正在配置 ClawdBot Telegram 渠道..."
+            
+            # 启用 Telegram 插件
+            echo -e "${YELLOW}启用 Telegram 插件...${NC}"
+            clawdbot plugins enable telegram 2>/dev/null || true
+            
+            # 添加 Telegram channel
+            echo -e "${YELLOW}添加 Telegram 账号...${NC}"
+            if clawdbot channels add --channel telegram --token "$bot_token" 2>/dev/null; then
+                log_info "Telegram 渠道配置成功！"
+            else
+                log_warn "Telegram 渠道可能已存在或配置失败"
+            fi
+            
+            echo ""
+            echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${WHITE}Telegram 配置完成！${NC}"
+            echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo ""
+            echo -e "Bot Token: ${WHITE}${bot_token:0:10}...${NC}"
+            echo -e "User ID: ${WHITE}$user_id${NC}"
+            echo ""
+            echo -e "${YELLOW}⚠️  重要: 需要重启 Gateway 才能生效！${NC}"
+            echo ""
+            
+            if confirm "是否现在重启 Gateway？" "y"; then
+                restart_gateway_for_channel
+            fi
+        else
+            echo ""
+            log_info "Bot Token: ${bot_token:0:10}..."
+            log_info "User ID: $user_id"
+        fi
         
         # 询问是否测试
         echo ""
-        if confirm "是否发送测试消息？" "y"; then
+        if confirm "是否发送测试消息验证配置？" "y"; then
             test_telegram_bot "$bot_token" "$user_id"
         fi
     else
@@ -1282,11 +1388,43 @@ EOF
         fi
         
         echo ""
-        log_info "Discord 配置完成！"
+        log_info "本地配置文件已更新！"
+        
+        # 如果 ClawdBot 已安装，使用 clawdbot 命令配置
+        if check_clawdbot_installed; then
+            echo ""
+            log_info "正在配置 ClawdBot Discord 渠道..."
+            
+            # 启用 Discord 插件
+            echo -e "${YELLOW}启用 Discord 插件...${NC}"
+            clawdbot plugins enable discord 2>/dev/null || true
+            
+            # 添加 Discord channel
+            echo -e "${YELLOW}添加 Discord 账号...${NC}"
+            if clawdbot channels add --channel discord --token "$bot_token" 2>/dev/null; then
+                log_info "Discord 渠道配置成功！"
+            else
+                log_warn "Discord 渠道可能已存在或配置失败"
+            fi
+            
+            echo ""
+            echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${WHITE}Discord 配置完成！${NC}"
+            echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo ""
+            echo -e "${YELLOW}⚠️  重要: 需要重启 Gateway 才能生效！${NC}"
+            echo ""
+            
+            if confirm "是否现在重启 Gateway？" "y"; then
+                restart_gateway_for_channel
+            fi
+        else
+            log_info "Discord 配置完成！"
+        fi
         
         # 询问是否测试
         echo ""
-        if confirm "是否发送测试消息？" "y"; then
+        if confirm "是否发送测试消息验证配置？" "y"; then
             test_discord_bot "$bot_token" "$channel_id"
         fi
     else
@@ -1306,14 +1444,39 @@ config_whatsapp() {
     
     echo -e "${CYAN}WhatsApp 配置需要扫描二维码登录${NC}"
     echo ""
-    echo "将运行 ClawdBot 的 WhatsApp 配置向导..."
+    
+    if ! check_clawdbot_installed; then
+        log_error "ClawdBot 未安装，请先运行安装脚本"
+        press_enter
+        return
+    fi
+    
+    echo "配置步骤:"
+    echo "  1. 启用 WhatsApp 插件"
+    echo "  2. 扫描二维码登录"
+    echo "  3. 重启 Gateway"
     echo ""
     
     if confirm "是否继续？"; then
-        if command -v clawdbot &> /dev/null; then
-            clawdbot onboard --provider whatsapp
-        else
-            log_error "ClawdBot 未安装，请先运行安装脚本"
+        # 确保初始化
+        ensure_clawdbot_init
+        
+        # 启用 WhatsApp 插件
+        echo ""
+        log_info "启用 WhatsApp 插件..."
+        clawdbot plugins enable whatsapp 2>/dev/null || true
+        
+        echo ""
+        log_info "正在启动 WhatsApp 登录向导..."
+        echo -e "${YELLOW}请扫描显示的二维码完成登录${NC}"
+        echo ""
+        
+        # 使用 channels login 命令
+        clawdbot channels login --channel whatsapp --verbose
+        
+        echo ""
+        if confirm "是否重启 Gateway 使配置生效？" "y"; then
+            restart_gateway_for_channel
         fi
     fi
     
@@ -1353,7 +1516,39 @@ slack:
 EOF
         
         echo ""
-        log_info "Slack 配置完成！"
+        log_info "本地配置文件已更新！"
+        
+        # 如果 ClawdBot 已安装，使用 clawdbot 命令配置
+        if check_clawdbot_installed; then
+            echo ""
+            log_info "正在配置 ClawdBot Slack 渠道..."
+            
+            # 启用 Slack 插件
+            echo -e "${YELLOW}启用 Slack 插件...${NC}"
+            clawdbot plugins enable slack 2>/dev/null || true
+            
+            # 添加 Slack channel
+            echo -e "${YELLOW}添加 Slack 账号...${NC}"
+            if clawdbot channels add --channel slack --bot-token "$bot_token" --app-token "$app_token" 2>/dev/null; then
+                log_info "Slack 渠道配置成功！"
+            else
+                log_warn "Slack 渠道可能已存在或配置失败"
+            fi
+            
+            echo ""
+            echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo -e "${WHITE}Slack 配置完成！${NC}"
+            echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+            echo ""
+            echo -e "${YELLOW}⚠️  重要: 需要重启 Gateway 才能生效！${NC}"
+            echo ""
+            
+            if confirm "是否现在重启 Gateway？" "y"; then
+                restart_gateway_for_channel
+            fi
+        else
+            log_info "Slack 配置完成！"
+        fi
         
         # 询问是否测试
         echo ""
@@ -1375,21 +1570,44 @@ config_wechat() {
     print_divider
     echo ""
     
-    echo -e "${YELLOW}⚠️ 注意: 微信接入需要使用第三方工具${NC}"
-    echo ""
-    echo -e "${CYAN}推荐方案:${NC}"
-    echo "  1. 使用 wechaty 框架"
-    echo "  2. 或使用 itchat 库"
-    echo ""
-    echo "将运行 ClawdBot 的微信配置向导..."
+    echo -e "${YELLOW}⚠️ 注意: 微信接入需要第三方工具支持${NC}"
     echo ""
     
-    if confirm "是否继续？"; then
-        if command -v clawdbot &> /dev/null; then
-            clawdbot onboard --provider wechat
-        else
-            log_error "ClawdBot 未安装"
+    if ! check_clawdbot_installed; then
+        log_error "ClawdBot 未安装"
+        press_enter
+        return
+    fi
+    
+    echo -e "${CYAN}微信接入方案:${NC}"
+    echo "  • ClawdBot 可能通过插件支持微信"
+    echo "  • 请查看 ClawdBot 文档了解详情"
+    echo ""
+    
+    # 检查是否有微信相关插件
+    echo -e "${YELLOW}检查可用插件...${NC}"
+    local plugins=$(clawdbot plugins list 2>/dev/null | grep -i wechat || echo "")
+    
+    if [ -n "$plugins" ]; then
+        echo ""
+        echo -e "${CYAN}发现微信相关插件:${NC}"
+        echo "$plugins"
+        echo ""
+        
+        if confirm "是否启用微信插件？"; then
+            clawdbot plugins enable wechat 2>/dev/null || true
+            log_info "微信插件已启用"
+            
+            if confirm "是否重启 Gateway？" "y"; then
+                restart_gateway_for_channel
+            fi
         fi
+    else
+        echo ""
+        log_warn "未发现内置微信插件"
+        echo -e "${CYAN}你可以尝试第三方方案:${NC}"
+        echo "  • wechaty: https://wechaty.js.org/"
+        echo "  • itchat: https://github.com/littlecodersh/itchat"
     fi
     
     press_enter
@@ -1412,14 +1630,38 @@ config_imessage() {
         return
     fi
     
-    echo -e "${CYAN}iMessage 配置需要授予完整磁盘访问权限${NC}"
+    if ! check_clawdbot_installed; then
+        log_error "ClawdBot 未安装"
+        press_enter
+        return
+    fi
+    
+    echo -e "${CYAN}iMessage 配置需要:${NC}"
+    echo "  1. 授予终端完整磁盘访问权限"
+    echo "  2. 确保 Messages.app 已登录"
+    echo ""
+    echo -e "${YELLOW}系统偏好设置 → 隐私与安全性 → 完整磁盘访问权限 → 添加终端${NC}"
     echo ""
     
     if confirm "是否继续配置？"; then
-        if command -v clawdbot &> /dev/null; then
-            clawdbot onboard --provider imessage
-        else
-            log_error "ClawdBot 未安装"
+        # 确保初始化
+        ensure_clawdbot_init
+        
+        # 启用 iMessage 插件
+        echo ""
+        log_info "启用 iMessage 插件..."
+        clawdbot plugins enable imessage 2>/dev/null || true
+        
+        # 添加 iMessage channel
+        echo ""
+        log_info "配置 iMessage 渠道..."
+        clawdbot channels add --channel imessage 2>/dev/null || true
+        
+        echo ""
+        log_info "iMessage 配置完成！"
+        
+        if confirm "是否重启 Gateway 使配置生效？" "y"; then
+            restart_gateway_for_channel
         fi
     fi
     
@@ -1589,7 +1831,7 @@ manage_service() {
     echo ""
     
     # 检查服务状态
-    if pgrep -f "clawdbot" > /dev/null 2>&1; then
+    if pgrep -f "clawdbot.*gateway" > /dev/null 2>&1; then
         echo -e "  当前状态: ${GREEN}● 运行中${NC}"
     else
         echo -e "  当前状态: ${RED}● 已停止${NC}"
@@ -1601,19 +1843,42 @@ manage_service() {
     print_menu_item "3" "重启服务" "🔄"
     print_menu_item "4" "查看状态" "📊"
     print_menu_item "5" "查看日志" "📋"
-    print_menu_item "6" "运行诊断" "🔍"
+    print_menu_item "6" "运行诊断并修复" "🔍"
+    print_menu_item "7" "安装为系统服务" "⚙️"
     print_menu_item "0" "返回主菜单" "↩️"
     echo ""
     
-    read -p "$(echo -e "${YELLOW}请选择 [0-6]: ${NC}")" choice
+    read -p "$(echo -e "${YELLOW}请选择 [0-7]: ${NC}")" choice
     
     case $choice in
         1)
             echo ""
-            log_info "正在启动服务..."
             if command -v clawdbot &> /dev/null; then
-                clawdbot start
-                log_info "服务已启动"
+                # 确保基础配置正确
+                ensure_clawdbot_init
+                
+                # 加载环境变量
+                if [ -f "$CLAWDBOT_ENV" ]; then
+                    source "$CLAWDBOT_ENV"
+                    log_info "已加载环境变量"
+                fi
+                
+                log_info "正在启动服务..."
+                
+                # 后台启动 Gateway（包含环境变量）
+                if [ -f "$CLAWDBOT_ENV" ]; then
+                    nohup bash -c "source $CLAWDBOT_ENV && clawdbot gateway --port 18789" > /tmp/clawdbot-gateway.log 2>&1 &
+                else
+                    nohup clawdbot gateway --port 18789 > /tmp/clawdbot-gateway.log 2>&1 &
+                fi
+                
+                sleep 3
+                if pgrep -f "clawdbot.*gateway" > /dev/null 2>&1; then
+                    log_info "服务已在后台启动"
+                    echo -e "${CYAN}日志文件: /tmp/clawdbot-gateway.log${NC}"
+                else
+                    log_error "启动失败，请查看日志"
+                fi
             else
                 log_error "ClawdBot 未安装"
             fi
@@ -1622,8 +1887,15 @@ manage_service() {
             echo ""
             log_info "正在停止服务..."
             if command -v clawdbot &> /dev/null; then
-                clawdbot stop
-                log_info "服务已停止"
+                clawdbot gateway stop 2>/dev/null || true
+                # 确保进程被杀死
+                pkill -f "clawdbot.*gateway" 2>/dev/null || true
+                sleep 1
+                if ! pgrep -f "clawdbot.*gateway" > /dev/null 2>&1; then
+                    log_info "服务已停止"
+                else
+                    log_warn "进程可能仍在运行"
+                fi
             else
                 log_error "ClawdBot 未安装"
             fi
@@ -1632,8 +1904,25 @@ manage_service() {
             echo ""
             log_info "正在重启服务..."
             if command -v clawdbot &> /dev/null; then
-                clawdbot restart
-                log_info "服务已重启"
+                clawdbot gateway stop 2>/dev/null || true
+                pkill -f "clawdbot.*gateway" 2>/dev/null || true
+                sleep 2
+                ensure_clawdbot_init
+                
+                # 加载环境变量并启动
+                if [ -f "$CLAWDBOT_ENV" ]; then
+                    source "$CLAWDBOT_ENV"
+                    nohup bash -c "source $CLAWDBOT_ENV && clawdbot gateway --port 18789" > /tmp/clawdbot-gateway.log 2>&1 &
+                else
+                    nohup clawdbot gateway --port 18789 > /tmp/clawdbot-gateway.log 2>&1 &
+                fi
+                
+                sleep 3
+                if pgrep -f "clawdbot.*gateway" > /dev/null 2>&1; then
+                    log_info "服务已重启"
+                else
+                    log_error "重启失败"
+                fi
             else
                 log_error "ClawdBot 未安装"
             fi
@@ -1659,7 +1948,22 @@ manage_service() {
         6)
             echo ""
             if command -v clawdbot &> /dev/null; then
-                clawdbot doctor
+                clawdbot doctor --fix
+            else
+                log_error "ClawdBot 未安装"
+            fi
+            ;;
+        7)
+            echo ""
+            if command -v clawdbot &> /dev/null; then
+                log_info "正在安装系统服务..."
+                clawdbot gateway install
+                log_info "系统服务已安装"
+                echo ""
+                echo -e "${CYAN}现在可以使用以下命令管理服务:${NC}"
+                echo "  clawdbot gateway start"
+                echo "  clawdbot gateway stop"
+                echo "  clawdbot gateway restart"
             else
                 log_error "ClawdBot 未安装"
             fi
@@ -1671,6 +1975,121 @@ manage_service() {
     
     press_enter
     manage_service
+}
+
+# 确保 ClawdBot 基础配置正确
+ensure_clawdbot_init() {
+    local CLAWDBOT_DIR="$HOME/.clawdbot"
+    
+    # 创建必要的目录
+    mkdir -p "$CLAWDBOT_DIR/agents/main/sessions" 2>/dev/null || true
+    mkdir -p "$CLAWDBOT_DIR/agents/main/agent" 2>/dev/null || true
+    mkdir -p "$CLAWDBOT_DIR/credentials" 2>/dev/null || true
+    
+    # 修复权限
+    chmod 700 "$CLAWDBOT_DIR" 2>/dev/null || true
+    
+    # 确保 gateway.mode 已设置
+    local current_mode=$(clawdbot config get gateway.mode 2>/dev/null)
+    if [ -z "$current_mode" ] || [ "$current_mode" = "undefined" ]; then
+        clawdbot config set gateway.mode local 2>/dev/null || true
+    fi
+}
+
+# 保存 AI 配置到 ClawdBot 环境变量
+save_clawdbot_ai_config() {
+    local provider="$1"
+    local api_key="$2"
+    local model="$3"
+    local base_url="$4"
+    
+    ensure_clawdbot_init
+    
+    local env_file="$CLAWDBOT_ENV"
+    
+    # 创建或更新环境变量文件
+    cat > "$env_file" << EOF
+# ClawdBot 环境变量配置
+# 由配置菜单自动生成: $(date '+%Y-%m-%d %H:%M:%S')
+EOF
+
+    # 根据 provider 设置对应的环境变量
+    case "$provider" in
+        anthropic)
+            echo "ANTHROPIC_API_KEY=\"$api_key\"" >> "$env_file"
+            ;;
+        openai)
+            echo "OPENAI_API_KEY=\"$api_key\"" >> "$env_file"
+            ;;
+        openai-compatible)
+            echo "OPENAI_API_KEY=\"$api_key\"" >> "$env_file"
+            [ -n "$base_url" ] && echo "OPENAI_BASE_URL=\"$base_url\"" >> "$env_file"
+            ;;
+        google)
+            echo "GOOGLE_API_KEY=\"$api_key\"" >> "$env_file"
+            ;;
+        groq)
+            echo "OPENAI_API_KEY=\"$api_key\"" >> "$env_file"
+            echo "OPENAI_BASE_URL=\"https://api.groq.com/openai/v1\"" >> "$env_file"
+            ;;
+        mistral)
+            echo "OPENAI_API_KEY=\"$api_key\"" >> "$env_file"
+            echo "OPENAI_BASE_URL=\"https://api.mistral.ai/v1\"" >> "$env_file"
+            ;;
+        openrouter)
+            echo "OPENAI_API_KEY=\"$api_key\"" >> "$env_file"
+            echo "OPENAI_BASE_URL=\"https://openrouter.ai/api/v1\"" >> "$env_file"
+            ;;
+        ollama)
+            echo "OLLAMA_HOST=\"${base_url:-http://localhost:11434}\"" >> "$env_file"
+            ;;
+    esac
+    
+    chmod 600 "$env_file"
+    
+    # 设置默认模型
+    if check_clawdbot_installed; then
+        local clawdbot_model=""
+        case "$provider" in
+            anthropic)
+                clawdbot_model="anthropic/$model"
+                ;;
+            openai|openai-compatible|groq|mistral|openrouter)
+                clawdbot_model="openai/$model"
+                ;;
+            google)
+                clawdbot_model="google/$model"
+                ;;
+            ollama)
+                clawdbot_model="ollama/$model"
+                ;;
+        esac
+        
+        if [ -n "$clawdbot_model" ]; then
+            # 加载环境变量并设置模型
+            source "$env_file"
+            clawdbot models set "$clawdbot_model" 2>/dev/null || true
+            log_info "ClawdBot 默认模型已设置为: $clawdbot_model"
+        fi
+    fi
+    
+    # 添加到 shell 配置文件
+    local shell_rc=""
+    if [ -f "$HOME/.zshrc" ]; then
+        shell_rc="$HOME/.zshrc"
+    elif [ -f "$HOME/.bashrc" ]; then
+        shell_rc="$HOME/.bashrc"
+    fi
+    
+    if [ -n "$shell_rc" ]; then
+        if ! grep -q "source.*clawdbot/env" "$shell_rc" 2>/dev/null; then
+            echo "" >> "$shell_rc"
+            echo "# ClawdBot 环境变量" >> "$shell_rc"
+            echo "[ -f \"$env_file\" ] && source \"$env_file\"" >> "$shell_rc"
+        fi
+    fi
+    
+    log_info "环境变量已保存到: $env_file"
 }
 
 # ================================ 高级设置 ================================

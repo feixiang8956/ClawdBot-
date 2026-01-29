@@ -276,6 +276,7 @@ install_clawdbot() {
         local current_version=$(clawdbot --version 2>/dev/null || echo "unknown")
         log_warn "ClawdBot 已安装 (版本: $current_version)"
         if ! confirm "是否重新安装/更新？"; then
+            init_clawdbot_config
             return 0
         fi
     fi
@@ -287,9 +288,132 @@ install_clawdbot() {
     # 验证安装
     if check_command clawdbot; then
         log_info "ClawdBot 安装成功: $(clawdbot --version 2>/dev/null || echo 'installed')"
+        init_clawdbot_config
     else
         log_error "ClawdBot 安装失败"
         exit 1
+    fi
+}
+
+# 初始化 ClawdBot 配置
+init_clawdbot_config() {
+    log_step "初始化 ClawdBot 配置..."
+    
+    local CLAWDBOT_DIR="$HOME/.clawdbot"
+    
+    # 创建必要的目录
+    mkdir -p "$CLAWDBOT_DIR/agents/main/sessions"
+    mkdir -p "$CLAWDBOT_DIR/agents/main/agent"
+    mkdir -p "$CLAWDBOT_DIR/credentials"
+    
+    # 修复权限
+    chmod 700 "$CLAWDBOT_DIR" 2>/dev/null || true
+    
+    # 设置 gateway.mode 为 local
+    if check_command clawdbot; then
+        clawdbot config set gateway.mode local 2>/dev/null || true
+        log_info "Gateway 模式已设置为 local"
+    fi
+}
+
+# 配置 ClawdBot 使用的 AI 模型和 API Key
+configure_clawdbot_model() {
+    log_step "配置 ClawdBot AI 模型..."
+    
+    local env_file="$HOME/.clawdbot/env"
+    
+    # 创建环境变量文件
+    cat > "$env_file" << EOF
+# ClawdBot 环境变量配置
+# 由安装脚本自动生成: $(date '+%Y-%m-%d %H:%M:%S')
+EOF
+
+    # 根据 AI_PROVIDER 设置对应的环境变量
+    case "$AI_PROVIDER" in
+        anthropic)
+            echo "ANTHROPIC_API_KEY=\"$AI_KEY\"" >> "$env_file"
+            ;;
+        openai)
+            echo "OPENAI_API_KEY=\"$AI_KEY\"" >> "$env_file"
+            ;;
+        openai-compatible)
+            echo "OPENAI_API_KEY=\"$AI_KEY\"" >> "$env_file"
+            [ -n "$BASE_URL" ] && echo "OPENAI_BASE_URL=\"$BASE_URL\"" >> "$env_file"
+            ;;
+        google)
+            echo "GOOGLE_API_KEY=\"$AI_KEY\"" >> "$env_file"
+            ;;
+        groq)
+            echo "OPENAI_API_KEY=\"$AI_KEY\"" >> "$env_file"
+            echo "OPENAI_BASE_URL=\"https://api.groq.com/openai/v1\"" >> "$env_file"
+            ;;
+        mistral)
+            echo "OPENAI_API_KEY=\"$AI_KEY\"" >> "$env_file"
+            echo "OPENAI_BASE_URL=\"https://api.mistral.ai/v1\"" >> "$env_file"
+            ;;
+        openrouter)
+            echo "OPENAI_API_KEY=\"$AI_KEY\"" >> "$env_file"
+            echo "OPENAI_BASE_URL=\"https://openrouter.ai/api/v1\"" >> "$env_file"
+            ;;
+        ollama)
+            echo "OLLAMA_HOST=\"${BASE_URL:-http://localhost:11434}\"" >> "$env_file"
+            ;;
+    esac
+    
+    chmod 600 "$env_file"
+    log_info "环境变量配置已保存到: $env_file"
+    
+    # 设置默认模型
+    if check_command clawdbot; then
+        local clawdbot_model=""
+        case "$AI_PROVIDER" in
+            anthropic)
+                clawdbot_model="anthropic/$AI_MODEL"
+                ;;
+            openai|openai-compatible|groq|mistral|openrouter)
+                clawdbot_model="openai/$AI_MODEL"
+                ;;
+            google)
+                clawdbot_model="google/$AI_MODEL"
+                ;;
+            ollama)
+                clawdbot_model="ollama/$AI_MODEL"
+                ;;
+        esac
+        
+        if [ -n "$clawdbot_model" ]; then
+            # 加载环境变量
+            source "$env_file"
+            clawdbot models set "$clawdbot_model" 2>/dev/null || true
+            log_info "默认模型已设置为: $clawdbot_model"
+        fi
+    fi
+    
+    # 添加到 shell 配置文件
+    add_env_to_shell "$env_file"
+}
+
+# 添加环境变量到 shell 配置
+add_env_to_shell() {
+    local env_file="$1"
+    local shell_rc=""
+    
+    if [ -f "$HOME/.zshrc" ]; then
+        shell_rc="$HOME/.zshrc"
+    elif [ -f "$HOME/.bashrc" ]; then
+        shell_rc="$HOME/.bashrc"
+    elif [ -f "$HOME/.bash_profile" ]; then
+        shell_rc="$HOME/.bash_profile"
+    fi
+    
+    if [ -n "$shell_rc" ]; then
+        # 检查是否已添加
+        if ! grep -q "source.*clawdbot/env" "$shell_rc" 2>/dev/null; then
+            echo "" >> "$shell_rc"
+            echo "# ClawdBot 环境变量" >> "$shell_rc"
+            echo "[ -f \"$env_file\" ] && source \"$env_file\"" >> "$shell_rc"
+            log_info "环境变量已添加到: $shell_rc"
+        fi
     fi
 }
 
@@ -516,8 +640,11 @@ run_onboard_wizard() {
         FILE_ACCESS="false"
     fi
     
-    # 生成配置文件
+    # 生成本地配置文件（用于参考和备份）
     generate_config_file
+    
+    # 配置 ClawdBot（使用 clawdbot 命令和环境变量）
+    configure_clawdbot_model
     
     # 创建示例技能（如果不存在）
     if [ ! -f "$SKILLS_DIR/daily-report.md" ]; then
@@ -1056,17 +1183,22 @@ print_success() {
     echo -e "${GREEN}                    🎉 安装完成！🎉${NC}"
     echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
     echo ""
-    echo -e "${WHITE}配置文件位置:${NC} $CONFIG_DIR/config.yaml"
-    echo -e "${WHITE}日志文件位置:${NC} $LOG_DIR/"
-    echo -e "${WHITE}技能目录位置:${NC} $SKILLS_DIR/"
+    echo -e "${WHITE}配置目录:${NC}"
+    echo "  ClawdBot 配置: ~/.clawdbot/"
+    echo "  环境变量配置: ~/.clawdbot/env"
+    echo "  参考配置文件: $CONFIG_DIR/config.yaml"
+    echo ""
+    echo -e "${CYAN}启动服务:${NC}"
+    echo "  # 加载环境变量后启动"
+    echo "  source ~/.clawdbot/env && clawdbot gateway"
     echo ""
     echo -e "${CYAN}常用命令:${NC}"
-    echo "  clawdbot start       # 启动服务"
-    echo "  clawdbot stop        # 停止服务"
-    echo "  clawdbot status      # 查看状态"
-    echo "  clawdbot logs        # 查看日志"
-    echo "  clawdbot config      # 编辑配置"
-    echo "  clawdbot doctor      # 诊断问题"
+    echo "  clawdbot gateway start   # 后台启动服务"
+    echo "  clawdbot gateway stop    # 停止服务"
+    echo "  clawdbot gateway status  # 查看状态"
+    echo "  clawdbot models status   # 查看模型配置"
+    echo "  clawdbot channels list   # 查看渠道列表"
+    echo "  clawdbot doctor          # 诊断问题"
     echo ""
     echo -e "${PURPLE}📚 官方文档: https://clawd.bot/docs${NC}"
     echo -e "${PURPLE}💬 社区支持: https://github.com/$GITHUB_REPO/discussions${NC}"
